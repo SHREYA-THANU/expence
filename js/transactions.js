@@ -428,6 +428,7 @@ export function initTransactionsController({
       btn.classList.toggle('is-active', btn.dataset.formType === type);
     });
     populateCategorySelect(inlineCategorySelect, type);
+    updateFormBudgetAlert('inline');
   }
 
   function setModalType(type, preferredCategory = '') {
@@ -436,6 +437,107 @@ export function initTransactionsController({
       btn.classList.toggle('is-active', btn.dataset.modalType === type);
     });
     populateCategorySelect(modalCategorySelect, type, preferredCategory);
+    updateFormBudgetAlert('modal');
+  }
+
+  function checkBudgetImpact(newAmount, txDate, existingTxId = null) {
+    const { transactions, budget } = getState();
+    const txMonth = getMonthKey(txDate);
+    const monthOverride = budget?.byMonth?.[txMonth];
+    const monthlyLimit = Number(
+      monthOverride !== undefined ? monthOverride : budget?.monthlyLimit ?? 0
+    );
+
+    if (monthlyLimit <= 0) return null;
+
+    let currentMonthExpenses = 0;
+    for (const tx of transactions) {
+      if (tx.type === 'expense' && getMonthKey(tx.date) === txMonth) {
+        if (existingTxId && String(tx.id) === String(existingTxId)) {
+          continue;
+        }
+        currentMonthExpenses += Number(tx.amount) || 0;
+      }
+    }
+
+    const numAmount = Number(newAmount);
+    if (Number.isNaN(numAmount) || numAmount <= 0) return null;
+
+    const projectedExpenses = Number((currentMonthExpenses + numAmount).toFixed(2));
+    const utilizationPct = Number(((projectedExpenses / monthlyLimit) * 100).toFixed(1));
+    const remaining = Number((monthlyLimit - projectedExpenses).toFixed(2));
+
+    if (projectedExpenses > monthlyLimit) {
+      return {
+        type: 'exceeded',
+        month: txMonth,
+        monthlyLimit,
+        projectedExpenses,
+        utilizationPct,
+        overBy: Math.abs(remaining)
+      };
+    }
+
+    if (utilizationPct >= 80) {
+      return {
+        type: 'warning',
+        month: txMonth,
+        monthlyLimit,
+        projectedExpenses,
+        utilizationPct,
+        remaining
+      };
+    }
+
+    return null;
+  }
+
+  function updateFormBudgetAlert(prefix) {
+    const bannerEl = document.getElementById(`${prefix}-budget-alert`);
+    if (!bannerEl) return;
+
+    const typeInput = document.getElementById(`${prefix}-tx-type`);
+    const dateInput = document.getElementById(`${prefix}-tx-date`);
+    const amountInput = document.getElementById(`${prefix}-tx-amount`);
+    const idInput = prefix === 'modal' ? document.getElementById('modal-tx-id') : null;
+    const existingId = idInput?.value?.trim() || null;
+
+    if (!typeInput || typeInput.value !== 'expense' || !amountInput || !amountInput.value) {
+      bannerEl.className = 'alert-banner hidden';
+      bannerEl.innerHTML = '';
+      return;
+    }
+
+    const impact = checkBudgetImpact(amountInput.value, dateInput?.value || getTodayISO(), existingId);
+
+    if (!impact) {
+      bannerEl.className = 'alert-banner hidden';
+      bannerEl.innerHTML = '';
+      return;
+    }
+
+    if (impact.type === 'exceeded') {
+      bannerEl.className = 'alert-banner is-danger';
+      bannerEl.innerHTML = `
+        <div class="alert-banner-content">
+          <i data-lucide="alert-octagon"></i>
+          <div>
+            <strong>Budget Exceeded Alert:</strong> This expense pushes ${formatMonthLabel(impact.month)} spending to ${impact.utilizationPct}%, exceeding your budget by ${formatCurrency(impact.overBy)}.
+          </div>
+        </div>
+      `;
+    } else if (impact.type === 'warning') {
+      bannerEl.className = 'alert-banner is-warning';
+      bannerEl.innerHTML = `
+        <div class="alert-banner-content">
+          <i data-lucide="alert-triangle"></i>
+          <div>
+            <strong>Budget Warning:</strong> This expense will use ${impact.utilizationPct}% of your ${formatMonthLabel(impact.month)} budget (${formatCurrency(impact.remaining)} remaining).
+          </div>
+        </div>
+      `;
+    }
+    refreshIcons();
   }
 
   function openModalForCreate(defaultType = 'expense') {
@@ -446,6 +548,7 @@ export function initTransactionsController({
     modalSubmitBtn.textContent = 'Save Transaction';
     modalDateInput.value = getTodayISO();
     setModalType(defaultType);
+    updateFormBudgetAlert('modal');
     modalOverlay.classList.remove('hidden');
     refreshIcons();
     setTimeout(() => modalTitleInput.focus(), 40);
@@ -453,7 +556,7 @@ export function initTransactionsController({
 
   function openModalForEdit(txId) {
     const { transactions } = getState();
-    const tx = transactions.find((item) => item.id === txId);
+    const tx = transactions.find((item) => String(item.id) === String(txId));
     if (!tx) return;
 
     clearErrors('modal');
@@ -465,6 +568,7 @@ export function initTransactionsController({
     modalDateInput.value = tx.date;
     modalDescInput.value = tx.description || '';
     setModalType(tx.type, tx.category);
+    updateFormBudgetAlert('modal');
     modalOverlay.classList.remove('hidden');
     refreshIcons();
     setTimeout(() => modalTitleInput.focus(), 40);
@@ -476,18 +580,20 @@ export function initTransactionsController({
 
   function requestDeleteTransaction(txId) {
     const { transactions } = getState();
-    const tx = transactions.find((item) => item.id === txId);
+    const tx = transactions.find((item) => String(item.id) === String(txId));
     if (!tx) return;
 
     openConfirmDialog({
       title: 'Delete Transaction',
       message: `Are you sure you want to delete "${tx.title}" (${formatCurrency(tx.amount)})? This action cannot be undone.`,
       confirmLabel: 'Delete',
-      onConfirm: () => {
-        const removed = deleteTransaction(txId);
-        if (removed) {
+      onConfirm: async () => {
+        try {
+          await deleteTransaction(txId);
           showToast('Transaction deleted');
-          onDataChange();
+          if (onDataChange) await onDataChange();
+        } catch (err) {
+          showToast(err.message || 'Error deleting transaction');
         }
       }
     });
@@ -507,9 +613,17 @@ export function initTransactionsController({
     });
   });
 
+  // Live budget alert updates when editing amount or date
+  const inlineAmountInput = document.getElementById('inline-tx-amount');
+  inlineAmountInput?.addEventListener('input', () => updateFormBudgetAlert('inline'));
+  inlineDateInput?.addEventListener('change', () => updateFormBudgetAlert('inline'));
+
+  modalAmountInput?.addEventListener('input', () => updateFormBudgetAlert('modal'));
+  modalDateInput?.addEventListener('change', () => updateFormBudgetAlert('modal'));
+
   // Inline form submit
   if (inlineForm) {
-    inlineForm.addEventListener('submit', (e) => {
+    inlineForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       clearErrors('inline');
 
@@ -528,12 +642,39 @@ export function initTransactionsController({
         return;
       }
 
-      addTransaction(payload);
-      inlineForm.reset();
-      inlineDateInput.value = getTodayISO();
-      setInlineType(payload.type);
-      showToast(`${payload.type === 'income' ? 'Income' : 'Expense'} added to ledger`);
-      onDataChange();
+      const impact = payload.type === 'expense' ? checkBudgetImpact(payload.amount, payload.date) : null;
+
+      const executeSave = async () => {
+        try {
+          await addTransaction(payload);
+          inlineForm.reset();
+          inlineDateInput.value = getTodayISO();
+          setInlineType(payload.type);
+          updateFormBudgetAlert('inline');
+          if (impact?.type === 'exceeded') {
+            showToast(`⚠️ Expense saved. Budget exceeded by ${formatCurrency(impact.overBy)}!`);
+          } else if (impact?.type === 'warning') {
+            showToast(`⚠️ Expense saved. Budget at ${impact.utilizationPct}% (${formatCurrency(impact.remaining)} left)`);
+          } else {
+            showToast(`${payload.type === 'income' ? 'Income' : 'Expense'} added to ledger`);
+          }
+          if (onDataChange) await onDataChange();
+        } catch (err) {
+          showToast(err.message || 'Failed to add transaction');
+        }
+      };
+
+      if (impact && impact.type === 'exceeded') {
+        openConfirmDialog({
+          title: 'Budget Exceeded Warning',
+          message: `This expense of ${formatCurrency(payload.amount)} will push your ${formatMonthLabel(impact.month)} spending to ${impact.utilizationPct}% of your limit, exceeding your ${formatCurrency(impact.monthlyLimit)} budget by ${formatCurrency(impact.overBy)}. Do you want to proceed?`,
+          confirmLabel: 'Proceed Anyway',
+          onConfirm: executeSave
+        });
+        return;
+      }
+
+      await executeSave();
     });
 
     inlineForm.addEventListener('reset', () => {
@@ -541,13 +682,14 @@ export function initTransactionsController({
       setTimeout(() => {
         inlineDateInput.value = getTodayISO();
         setInlineType('expense');
+        updateFormBudgetAlert('inline');
       }, 0);
     });
   }
 
   // Modal form submit
   if (modalForm) {
-    modalForm.addEventListener('submit', (e) => {
+    modalForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       clearErrors('modal');
 
@@ -567,16 +709,47 @@ export function initTransactionsController({
         return;
       }
 
-      if (id) {
-        updateTransaction(id, payload);
-        showToast('Transaction updated');
-      } else {
-        addTransaction(payload);
-        showToast(`${payload.type === 'income' ? 'Income' : 'Expense'} added to ledger`);
+      const impact = payload.type === 'expense' ? checkBudgetImpact(payload.amount, payload.date, id) : null;
+
+      const executeSave = async () => {
+        try {
+          if (id) {
+            await updateTransaction(id, payload);
+            if (impact?.type === 'exceeded') {
+              showToast(`⚠️ Transaction updated. Budget exceeded by ${formatCurrency(impact.overBy)}!`);
+            } else if (impact?.type === 'warning') {
+              showToast(`⚠️ Transaction updated. Budget at ${impact.utilizationPct}% (${formatCurrency(impact.remaining)} left)`);
+            } else {
+              showToast('Transaction updated');
+            }
+          } else {
+            await addTransaction(payload);
+            if (impact?.type === 'exceeded') {
+              showToast(`⚠️ Expense saved. Budget exceeded by ${formatCurrency(impact.overBy)}!`);
+            } else if (impact?.type === 'warning') {
+              showToast(`⚠️ Expense saved. Budget at ${impact.utilizationPct}% (${formatCurrency(impact.remaining)} left)`);
+            } else {
+              showToast(`${payload.type === 'income' ? 'Income' : 'Expense'} added to ledger`);
+            }
+          }
+          closeModal();
+          if (onDataChange) await onDataChange();
+        } catch (err) {
+          showToast(err.message || 'Failed to save transaction');
+        }
+      };
+
+      if (impact && impact.type === 'exceeded') {
+        openConfirmDialog({
+          title: 'Budget Exceeded Warning',
+          message: `This expense of ${formatCurrency(payload.amount)} will push your ${formatMonthLabel(impact.month)} spending to ${impact.utilizationPct}% of your limit, exceeding your ${formatCurrency(impact.monthlyLimit)} budget by ${formatCurrency(impact.overBy)}. Do you want to proceed?`,
+          confirmLabel: 'Proceed Anyway',
+          onConfirm: executeSave
+        });
+        return;
       }
 
-      closeModal();
-      onDataChange();
+      await executeSave();
     });
   }
 

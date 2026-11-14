@@ -126,7 +126,7 @@ export function initBudgetController({ getState, onDataChange, showToast, refres
   const progressBlock = document.getElementById('budget-progress-block');
   const breakdownContainer = document.getElementById('budget-category-breakdown');
 
-  form?.addEventListener('submit', (e) => {
+  form?.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (limitError) limitError.textContent = '';
     limitInput?.classList.remove('is-invalid');
@@ -140,9 +140,13 @@ export function initBudgetController({ getState, onDataChange, showToast, refres
 
     const { activeMonth } = getState();
     const targetMonth = activeMonth === 'all' ? getTodayISO().slice(0, 7) : activeMonth;
-    saveBudget(rawVal, targetMonth);
-    showToast(`Monthly budget updated for ${formatMonthLabel(targetMonth)}`);
-    onDataChange();
+    try {
+      await saveBudget(rawVal, targetMonth);
+      showToast(`Monthly budget updated for ${formatMonthLabel(targetMonth)}`);
+      if (onDataChange) await onDataChange();
+    } catch (err) {
+      showToast(err.message || 'Failed to save budget');
+    }
   });
 
   function render() {

@@ -7,6 +7,7 @@
 
 import {
   seedSampleDataIfNeeded,
+  migrateLocalStorageIfNeeded,
   getTransactions,
   getBudget,
   resetToSampleData
@@ -19,7 +20,7 @@ import {
 } from './transactions.js';
 import { initDashboardController } from './dashboard.js';
 import { initAnalyticsController } from './analytics.js';
-import { initBudgetController } from './budget.js';
+import { initBudgetController, calculateBudgetStatus } from './budget.js';
 
 const VIEW_TITLES = {
   dashboard: 'Dashboard',
@@ -29,16 +30,36 @@ const VIEW_TITLES = {
   budget: 'Budget Management'
 };
 
-document.addEventListener('DOMContentLoaded', () => {
-  // Seed initial sample data on first visit only
-  seedSampleDataIfNeeded();
-
+document.addEventListener('DOMContentLoaded', async () => {
   const state = {
     activeView: 'dashboard',
     activeMonth: getTodayISO().slice(0, 7),
-    transactions: getTransactions(),
-    budget: getBudget()
+    transactions: [],
+    budget: { monthlyLimit: 3200, byMonth: {}, updatedAt: '' }
   };
+
+  const statusBanner = document.getElementById('backend-status-banner');
+  const statusMessage = document.getElementById('backend-status-message');
+  const loadingIndicator = document.getElementById('app-loading-state');
+
+  function showBackendError(msg) {
+    if (statusBanner) {
+      if (statusMessage) statusMessage.textContent = msg;
+      statusBanner.classList.remove('hidden');
+    }
+  }
+
+  function hideBackendError() {
+    if (statusBanner) {
+      statusBanner.classList.add('hidden');
+    }
+  }
+
+  function setLoading(isLoading) {
+    if (loadingIndicator) {
+      loadingIndicator.classList.toggle('hidden', !isLoading);
+    }
+  }
 
   function getState() {
     return state;
@@ -162,18 +183,49 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshIcons
   });
 
+  function updateTopbarBudgetPill() {
+    const pill = document.getElementById('topbar-budget-pill');
+    if (!pill) return;
+    const { transactions, budget, activeMonth } = state;
+    const effectiveMonth = activeMonth === 'all' ? getTodayISO().slice(0, 7) : activeMonth;
+    const status = calculateBudgetStatus(transactions, budget, effectiveMonth);
+
+    if (status.status === 'exceeded') {
+      pill.className = 'tx-type-label text-expense';
+      pill.style.background = 'var(--color-danger-subtle, #fef2f2)';
+      pill.style.border = '1px solid var(--color-danger-border, #fecaca)';
+      pill.innerHTML = `<i data-lucide="alert-octagon"></i><span>Budget Exceeded (${status.utilizationPct}%)</span>`;
+      pill.classList.remove('hidden');
+    } else if (status.status === 'warning') {
+      pill.className = 'tx-type-label text-warning';
+      pill.style.background = 'var(--color-warning-subtle, #fffbeb)';
+      pill.style.border = '1px solid var(--color-warning-border, #fde68a)';
+      pill.innerHTML = `<i data-lucide="alert-triangle"></i><span>Budget Alert (${status.utilizationPct}%)</span>`;
+      pill.classList.remove('hidden');
+    } else {
+      pill.classList.add('hidden');
+    }
+  }
+
   function renderActiveViews() {
     dashboardCtrl.render();
     transactionsCtrl.render();
     analyticsCtrl.render();
     budgetCtrl.render();
+    updateTopbarBudgetPill();
   }
 
-  function reloadAndRender() {
-    state.transactions = getTransactions();
-    state.budget = getBudget();
-    populateMonthSelector();
-    renderActiveViews();
+  async function reloadAndRender() {
+    try {
+      state.transactions = await getTransactions();
+      state.budget = await getBudget();
+      hideBackendError();
+      populateMonthSelector();
+      renderActiveViews();
+    } catch (err) {
+      console.error('Failed to reload data from backend:', err);
+      showBackendError('Unable to connect to backend server. Make sure the Node server is running.');
+    }
   }
 
   // Navigation & Mobile Drawer
@@ -251,7 +303,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // CSV Export Utility
   document.getElementById('export-csv-btn')?.addEventListener('click', () => {
-    const txs = getTransactions();
+    const txs = state.transactions || [];
     if (!txs.length) {
       showToast('No transactions to export');
       return;
@@ -286,17 +338,35 @@ document.addEventListener('DOMContentLoaded', () => {
       message:
         'Restore default sample transactions and monthly budget? Any custom entries you added will be replaced.',
       confirmLabel: 'Reset Data',
-      onConfirm: () => {
-        resetToSampleData();
-        state.activeMonth = getTodayISO().slice(0, 7);
-        reloadAndRender();
-        showToast('Sample data restored');
+      onConfirm: async () => {
+        try {
+          await resetToSampleData();
+          state.activeMonth = getTodayISO().slice(0, 7);
+          await reloadAndRender();
+          showToast('Sample data restored');
+        } catch (err) {
+          showToast(err.message || 'Error restoring sample data');
+        }
       }
     });
   });
 
-  // Initial Render
-  populateMonthSelector();
-  renderActiveViews();
+  // Initial Bootup Sequence: Migration, Seeding, and Initial Render
+  setLoading(true);
+  try {
+    const migrationResult = await migrateLocalStorageIfNeeded();
+    if (migrationResult.migrated && (migrationResult.txCount > 0 || migrationResult.budgetCount > 0)) {
+      showToast(`Migrated ${migrationResult.txCount} transactions and ${migrationResult.budgetCount} budgets.`);
+    }
+
+    await seedSampleDataIfNeeded();
+    await reloadAndRender();
+  } catch (err) {
+    console.error('Initialization error:', err);
+    showBackendError('Failed to initialize app. Ensure Express is running on http://localhost:3000.');
+  } finally {
+    setLoading(false);
+  }
+
   refreshIcons();
 });

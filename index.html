@@ -112,6 +112,7 @@
           </div>
 
           <div class="topbar-actions">
+            <span id="topbar-budget-pill" class="tx-type-label hidden" style="padding: 6px 12px; border-radius: 9999px; cursor: pointer; text-decoration: none;" data-goto="budget" title="Click to view Budget"></span>
             <label for="global-month-select" class="sr-only">Active Month</label>
             <select id="global-month-select" class="select-control topbar-month-select" aria-label="Select active month"></select>
             <button type="button" id="open-entry-modal-btn" class="btn btn-primary">
@@ -123,6 +124,19 @@
 
         <!-- Dynamic View Panels -->
         <main class="main-content" id="main-content">
+          <!-- Backend Connection Alert / Loading State -->
+          <div id="backend-status-banner" class="alert-banner is-danger hidden" role="alert">
+            <div class="alert-banner-content">
+              <i data-lucide="alert-octagon"></i>
+              <span id="backend-status-message">Cannot connect to backend server. Make sure the backend server is running.</span>
+            </div>
+          </div>
+          <div id="app-loading-state" class="empty-state hidden" style="margin: 40px auto; max-width: 480px;">
+            <div class="empty-state-icon"><i data-lucide="refresh-cw"></i></div>
+            <div class="empty-state-title">Loading Ledger Data...</div>
+            <p class="empty-state-desc">Fetching transactions and budget from the database.</p>
+          </div>
+
           <!-- VIEW 1: DASHBOARD -->
           <section id="view-dashboard" class="view-panel is-active" aria-labelledby="topbar-title">
             <!-- Budget Alert Strip (shown dynamically at >=80% or >100%) -->
@@ -356,6 +370,8 @@
                     ></textarea>
                     <span class="field-error" id="inline-error-description"></span>
                   </div>
+
+                  <div id="inline-budget-alert" class="alert-banner hidden" style="margin-bottom: 16px;"></div>
 
                   <div class="form-actions">
                     <button type="reset" class="btn btn-secondary" id="inline-form-reset">Clear Form</button>
@@ -600,6 +616,8 @@
             ></textarea>
             <span class="field-error" id="modal-error-description"></span>
           </div>
+
+          <div id="modal-budget-alert" class="alert-banner hidden" style="margin-bottom: 16px;"></div>
 
           <div class="form-actions">
             <button type="button" id="tx-modal-cancel" class="btn btn-secondary">Cancel</button>
